@@ -1,10 +1,10 @@
-# go-tiny-claw - 极简工业级 Harness 引擎
+# go-hello-claw - 极简工业级 Harness 引擎
 
 > 用 Go 吸收顶级开源项目 OpenClaw 的极简哲学，从零构建工业级 harness 引擎
 
 ## 🌟 项目简介
 
-go-tiny-claw 是一个受 OpenClaw 启发的极简工业级 Harness 引擎，采用 Go 语言构建。它提供了一个强大的框架，让 AI 模型能够通过工具执行实际的操作任务。
+go-hello-claw 是一个受 OpenClaw 启发的极简工业级 Harness 引擎，采用 Go 语言构建。它提供了一个强大的框架，让 AI 模型能够通过工具执行实际的操作任务。
 
 
 ## 核心设计哲学
@@ -28,7 +28,7 @@ Harness over Framework: 真正的壁垒不在于调用大模型 API，而在于�
 ## 🏗️ 架构设计
 
 ```
-go-tiny-claw/
+go-hello-claw/
 ├── cmd/claw/          # 主程序入口
 ├── internal/
 │   ├── engine/        # 引擎核心逻辑
@@ -76,7 +76,7 @@ go-tiny-claw/
 1. 克隆项目
 ```bash
 git clone <repository-url>
-cd go-tiny-claw
+cd go-hello-claw
 ```
 
 2. 设置环境变量
@@ -132,7 +132,7 @@ go run cmd/claw/main.go
 
 ## 🎯 使用场景
 
-go-tiny-claw 适用于以下场景：
+go-hello-claw 适用于以下场景：
 
 1. **代码自动化**: 自动化代码审查、重构、优化
 2. **文档生成**: 自动生成技术文档、README 等
