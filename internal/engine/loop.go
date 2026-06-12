@@ -6,10 +6,10 @@ import (
 	"log"
 	"sync"
 
+	ctxpkg "github.com/yixiangrong/go-hello-claw/internal/context"
 	"github.com/yixiangrong/go-hello-claw/internal/provider"
 	"github.com/yixiangrong/go-hello-claw/internal/schema"
 	"github.com/yixiangrong/go-hello-claw/internal/tools"
-	ctxpkg "github.com/yixiangrong/go-hello-claw/internal/context"
 )
 
 // TODO:待重构
@@ -17,68 +17,72 @@ import (
 type AgentEngine struct {
 	provider       provider.LLMProvider
 	registry       tools.Registry
-	WorkDir        string
 	EnableThinking bool
-	composer       *ctxpkg.PromptComposer
+	compactor      *ctxpkg.Compactor
 }
 
-func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool) *AgentEngine {
+func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool) *AgentEngine {
 	return &AgentEngine{
 		provider:       p,
 		registry:       r,
-		WorkDir:        workDir,
 		EnableThinking: enableThinking,
-		composer:       ctxpkg.NewPromptComposer(workDir), // 【初始化】
+		compactor:      ctxpkg.NewCompactor(3000, 6), // 测试时将阈值调低至 3000，保护区设为 6
+
 	}
 }
 
-func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Reporter) error {
-	log.Printf("[Engine] 引擎启动，锁定工作区: %s\n", e.WorkDir)
+// 接收 Session 参数，动态加载工作区环境
+func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter Reporter) error {
+	log.Printf("[Engine] 唤醒会话 [%s]，锁定工作区: %s\n", session.ID, session.WorkDir)
 
-	// 【核心修改】动态组装 System Prompt
-	systemMsg := e.composer.Build()
-
-	contextHistory := []schema.Message{
-		systemMsg,
-		{Role: schema.RoleUser, Content: userPrompt},
-	}
+	composer := ctxpkg.NewPromptComposer(session.WorkDir)
+	systemMsg := composer.Build()
 
 	for {
 		availableTools := e.registry.GetAvailableTools()
+
+		// 获取短期工作记忆,最近20条
+		workingMemory := session.GetWorkingMemory(20)
+
+		var contextHistory []schema.Message
+		contextHistory = append(contextHistory, systemMsg)
+		contextHistory = append(contextHistory, workingMemory...)
+
+		// 【核心防线】在向大模型发起请求前，执行上下文双重降级压缩！
+		compactedContext := e.compactor.Compact(contextHistory)
 
 		// Phase 1: Thinking
 		if e.EnableThinking {
 			if reporter != nil {
 				reporter.OnThinking(ctx)
 			}
-
-			thinkResp, err := e.provider.Generate(ctx, contextHistory, nil)
+			thinkResp, err := e.provider.Generate(ctx, compactedContext, nil)
 			if err != nil {
 				return fmt.Errorf("Thinking 阶段失败: %w", err)
 			}
 			if thinkResp.Content != "" {
-				contextHistory = append(contextHistory, *thinkResp)
+				session.Append(*thinkResp)
+				compactedContext = append(compactedContext, *thinkResp)
 			}
 		}
 
 		// Phase 2: Action
-		actionResp, err := e.provider.Generate(ctx, contextHistory, availableTools)
+		actionResp, err := e.provider.Generate(ctx, compactedContext, availableTools)
 		if err != nil {
 			return fmt.Errorf("Action 阶段失败: %w", err)
 		}
 
-		contextHistory = append(contextHistory, *actionResp)
+		session.Append(*actionResp) // 持久化，写入Session(硬盘、全量内存)的永远是全量的真实相应，不收compact影响
+		compactedContext = append(compactedContext, *actionResp)
 
 		if actionResp.Content != "" && reporter != nil {
 			reporter.OnMessage(ctx, actionResp.Content)
 		}
 
-		// 检查结束
 		if len(actionResp.ToolCalls) == 0 {
 			break
 		}
 
-		// 执行并发工具调用
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 		var wg sync.WaitGroup
 
@@ -112,9 +116,8 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Repor
 
 		wg.Wait()
 
-		for _, obs := range observationMsgs {
-			contextHistory = append(contextHistory, obs)
-		}
+		// 持久化观察结果
+		session.Append(observationMsgs...)
 	}
 
 	return nil
