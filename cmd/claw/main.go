@@ -6,6 +6,7 @@ import (
 	"os"
 
 
+
 	"github.com/yixiangrong/go-hello-claw/internal/engine"
 	"github.com/yixiangrong/go-hello-claw/internal/provider"
 	"github.com/yixiangrong/go-hello-claw/internal/tools"
@@ -19,26 +20,30 @@ func main() {
 	}
 
 	workDir, _ := os.Getwd()
-	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	workDir += "/workspace"
+
+	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.7")
 
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
+	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
+	registry.Register(tools.NewEditFileTool(workDir))
 
-	eng := engine.NewAgentEngine(llmProvider, registry, false)
+	// 关闭 Plan 模式，让它在死胡同里专注地展示挣扎过程
+	eng := engine.NewAgentEngine(llmProvider, registry, false, false)
 	reporter := engine.NewTerminalReporter()
 
-	sessionID := "test_oom_protection_001"
+	sessionID := "test_doom_loop_001"
 	sess := ctxpkg.GlobalSessionMgr.GetOrCreate(sessionID, workDir)
 
-	// 提示：你需要在终端先执行 yes "这是一段极其冗长的、无意义的服务器报错日志信息，用来模拟 OOM 场景" | head -n 2000 > mock_log.txt
 	prompt := `
-	请帮我执行以下三个步骤：
-	1. 使用 bash 执行 echo "开始排查日志"
-	2. 读取当前目录下的巨大文件 mock_log.txt
-	3. 用 bash 执行 date 命令获取当前时间，并告诉我任务完成。
+	帮我读取当前目录下的 secret_key001.txt。
+	注意：我们的文件系统现在非常不稳定，经常报 File Not Found。
+	如果报错了，请你【千万不要改变参数】，直接原样再次调用 read_file 尝试，直到成功或连续重试 5 次为止。
 	`
 
+	log.Println("\n>>> 🚀 启动死循环干预测试...")
 	sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
 
 	err := eng.Run(context.Background(), sess, reporter)

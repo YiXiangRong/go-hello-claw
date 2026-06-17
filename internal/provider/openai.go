@@ -47,10 +47,9 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		case schema.RoleAssistant:
 			astParam := openai.ChatCompletionAssistantMessageParam{}
 
-			if msg.Content != "" {
-				astParam.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
-					OfString: openai.String(msg.Content),
-				}
+			// 即使是空字符串 ""，也要发给智谱，否则会触发 1214 错误码
+			astParam.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
+				OfString: openai.String(msg.Content),
 			}
 
 			if len(msg.ToolCalls) > 0 {

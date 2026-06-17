@@ -48,9 +48,8 @@ func (p *ClaudeProvider) Generate(ctx context.Context, msgs []schema.Message, av
 			}
 		case schema.RoleAssistant:
 			var blocks []anthropic.ContentBlockParamUnion
-			if msg.Content != "" {
-				blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
-			}
+			// 即使 Content 是空的，也要填充一个空的 TextBlock，否则引发1214错误
+			blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
 			for _, tc := range msg.ToolCalls {
 				// 新版 SDK：手动构造 ToolUse block
 				var inputMap map[string]interface{}

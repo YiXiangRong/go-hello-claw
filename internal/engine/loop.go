@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"strings"
 
 	ctxpkg "github.com/yixiangrong/go-hello-claw/internal/context"
 	"github.com/yixiangrong/go-hello-claw/internal/provider"
@@ -18,38 +19,40 @@ type AgentEngine struct {
 	provider       provider.LLMProvider
 	registry       tools.Registry
 	EnableThinking bool
+	PlanMode       bool
 	compactor      *ctxpkg.Compactor
+	recovery       *ctxpkg.RecoveryManager
+	injector       *ReminderInjector // 【新增】提醒注入器
 }
 
-func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool) *AgentEngine {
+func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
 	return &AgentEngine{
 		provider:       p,
 		registry:       r,
 		EnableThinking: enableThinking,
-		compactor:      ctxpkg.NewCompactor(3000, 6), // 测试时将阈值调低至 3000，保护区设为 6
-
+		PlanMode:       planMode,
+		compactor:      ctxpkg.NewCompactor(20000, 6),
+		recovery:       ctxpkg.NewRecoveryManager(),
+		injector:       NewReminderInjector(), // 【初始化注入器】
 	}
 }
 
-// 接收 Session 参数，动态加载工作区环境
 func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter Reporter) error {
-	log.Printf("[Engine] 唤醒会话 [%s]，锁定工作区: %s\n", session.ID, session.WorkDir)
+	log.Printf("[Engine] 唤醒会话 [%s]，锁定工作区: %s (PlanMode: %v)\n", session.ID, session.WorkDir, e.PlanMode)
 
-	composer := ctxpkg.NewPromptComposer(session.WorkDir)
+	composer := ctxpkg.NewPromptComposer(session.WorkDir, e.PlanMode)
 	systemMsg := composer.Build()
 
 	for {
 		availableTools := e.registry.GetAvailableTools()
-
-		// 获取短期工作记忆,最近20条
 		workingMemory := session.GetWorkingMemory(20)
 
 		var contextHistory []schema.Message
 		contextHistory = append(contextHistory, systemMsg)
 		contextHistory = append(contextHistory, workingMemory...)
-
-		// 【核心防线】在向大模型发起请求前，执行上下文双重降级压缩！
 		compactedContext := e.compactor.Compact(contextHistory)
+
+		var currentTurnThinkingContent string
 
 		// Phase 1: Thinking
 		if e.EnableThinking {
@@ -61,7 +64,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 				return fmt.Errorf("Thinking 阶段失败: %w", err)
 			}
 			if thinkResp.Content != "" {
-				session.Append(*thinkResp)
+				currentTurnThinkingContent = thinkResp.Content
 				compactedContext = append(compactedContext, *thinkResp)
 			}
 		}
@@ -72,8 +75,12 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 			return fmt.Errorf("Action 阶段失败: %w", err)
 		}
 
-		session.Append(*actionResp) // 持久化，写入Session(硬盘、全量内存)的永远是全量的真实相应，不收compact影响
-		compactedContext = append(compactedContext, *actionResp)
+		finalAssistantMsg := schema.Message{
+			Role:      schema.RoleAssistant,
+			Content:   strings.TrimSpace(currentTurnThinkingContent + "\n" + actionResp.Content),
+			ToolCalls: actionResp.ToolCalls,
+		}
+		session.Append(finalAssistantMsg)
 
 		if actionResp.Content != "" && reporter != nil {
 			reporter.OnMessage(ctx, actionResp.Content)
@@ -85,6 +92,10 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 		var wg sync.WaitGroup
+
+		// 用于收集本轮执行的最后一个工具供 Reminder 分析
+		var lastToolCall schema.ToolCall
+		var lastToolResult schema.ToolResult
 
 		for i, toolCall := range actionResp.ToolCalls {
 			wg.Add(1)
@@ -98,8 +109,13 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 
 				result := e.registry.Execute(ctx, call)
 
+				finalOutput := result.Output
+				if result.IsError {
+					finalOutput = e.recovery.AnalyzeAndInject(call.Name, result.Output)
+				}
+
 				if reporter != nil {
-					displayOutput := result.Output
+					displayOutput := finalOutput
 					if len(displayOutput) > 200 {
 						displayOutput = displayOutput[:200] + "... (已截断)"
 					}
@@ -108,16 +124,26 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 
 				observationMsgs[idx] = schema.Message{
 					Role:       schema.RoleUser,
-					Content:    result.Output,
+					Content:    finalOutput,
 					ToolCallID: call.ID,
+				}
+
+				if idx == 0 {
+					lastToolCall = call
+					lastToolResult = result
 				}
 			}(i, toolCall)
 		}
 
 		wg.Wait()
 
-		// 持久化观察结果
 		session.Append(observationMsgs...)
+
+		// 【核心防线】：在进入下一轮前，进行死循环探测与注入
+		reminderMsg := e.injector.CheckAndInject(lastToolCall, lastToolResult)
+		if reminderMsg != nil {
+			session.Append(*reminderMsg)
+		}
 	}
 
 	return nil
