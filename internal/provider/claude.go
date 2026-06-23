@@ -21,7 +21,7 @@ func NewZhipuClaudeProvider(model string) *ClaudeProvider {
 	if apiKey == "" {
 		panic("请设置 ZHIPU_API_KEY 环境变量")
 	}
-	baseURL := "https://open.bigmodel.cn/api/paas/v4/"
+	baseURL := "https://open.bigmodel.cn/api/anthropic"
 	return &ClaudeProvider{
 		client: anthropic.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
 		model:  model,
@@ -118,6 +118,14 @@ func (p *ClaudeProvider) Generate(ctx context.Context, msgs []schema.Message, av
 
 	resultMsg := &schema.Message{
 		Role: schema.RoleAssistant,
+	}
+
+	// 【新增】提取并封装 Token 消耗 (Claude 特有的 Usage 字段名)
+	if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
+		resultMsg.Usage = &schema.Usage{
+			PromptTokens:     int(resp.Usage.InputTokens),
+			CompletionTokens: int(resp.Usage.OutputTokens),
+		}
 	}
 
 	for _, block := range resp.Content {

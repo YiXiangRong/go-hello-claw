@@ -13,7 +13,7 @@ import (
 )
 
 type OpenAIProvider struct {
-	client openai.Client // 值类型，非指针
+	client openai.Client
 	model  string
 }
 
@@ -39,7 +39,6 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 
 		case schema.RoleUser:
 			if msg.ToolCallID != "" {
-				// 注意新版参数顺序是 (content, toolCallID)
 				openaiMsgs = append(openaiMsgs, openai.ToolMessage(msg.Content, msg.ToolCallID))
 			} else {
 				openaiMsgs = append(openaiMsgs, openai.UserMessage(msg.Content))
@@ -55,7 +54,6 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 			if len(msg.ToolCalls) > 0 {
 				var toolCalls []openai.ChatCompletionMessageToolCallUnionParam
 				for _, tc := range msg.ToolCalls {
-					// OfFunction 对应 GetFunction()，字段类型为 *ChatCompletionMessageFunctionToolCallParam
 					toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallUnionParam{
 						OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
 							ID:   tc.ID,
@@ -83,7 +81,6 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		if m, ok := toolDef.InputSchema.(map[string]interface{}); ok {
 			params = shared.FunctionParameters(m)
 		} else {
-			// fallback：JSON 往返
 			b, _ := json.Marshal(toolDef.InputSchema)
 			_ = json.Unmarshal(b, &params)
 		}
@@ -117,6 +114,14 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 	resultMsg := &schema.Message{
 		Role:    schema.RoleAssistant,
 		Content: choice.Content,
+	}
+
+	// 【新增】提取 Usage 信息
+	if resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
+		resultMsg.Usage = &schema.Usage{
+			PromptTokens:     int(resp.Usage.PromptTokens),
+			CompletionTokens: int(resp.Usage.CompletionTokens),
+		}
 	}
 
 	for _, tc := range choice.ToolCalls {
