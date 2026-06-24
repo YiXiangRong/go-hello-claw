@@ -7,7 +7,21 @@ import (
 	"log"
 
 	"github.com/yixiangrong/go-hello-claw/internal/schema"
+	"github.com/yixiangrong/go-hello-claw/internal/observability"
+
 )
+
+/*
+在18讲的 CostTracker中,我们记录的仅仅是向大模型发发起HTTP请求的那部分耗时(Generate方法的执
+行时间)。但你在第8讲中学过,我们的go-tiny-claw是支持在本地利用Goroutine并发执行多个物理工具(如
+bash命令或 read_file)的。
+如果一个 bash 命令执行了一个需要编译5分钟的巨型Go项目,这!5分钟的物理世界耗时,目前的CostTracker
+是捕获不到的。结合我们本讲中使用的"装饰器拦截(Decorator/MMiddleware)"模式,如果让你在不修改
+internal/tools/bash.go源码的前提下,编写一个能记录"工具在本地物理执行真正耗费了多少毫秒"的拦截器,并且把
+它挂载到Engine中,你会怎么写这段代码?
+提示:回忆一下我们在第16讲学过的,在Registry中使用Use扫载MiddlewareFunc的逻辑。
+欢迎在留言区分享你的监控探头设计。我们下一讲,开启链路追踪
+*/
 
 type BaseTool interface {
 	Name() string
@@ -61,6 +75,14 @@ func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
 }
 
 func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+	// 【埋点 5】：开启工具执行的 Span
+	ctx, span := observability.StartSpan(ctx, "Tool.Execute")
+	span.AddAttribute("tool_name", call.Name)
+	// 将 JSON 参数存入以备调试
+	span.AddAttribute("arguments", string(call.Arguments))
+
+	defer span.EndSpan() // 无论成功失败，确保结束
+
 	// 1. 路由查找
 	tool, exists := r.tools[call.Name]
 	if !exists {
@@ -76,6 +98,8 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 		allowed, reason := mw(ctx, call)
 		if !allowed {
 			log.Printf("[Registry] ⚠️ 工具 %s 被 Middleware 拦截: %s\n", call.Name, reason)
+			span.AddAttribute("intercepted", true)
+			span.AddAttribute("reject_reason", reason)
 			return schema.ToolResult{
 				ToolCallID: call.ID,
 				Output:     fmt.Sprintf("执行被系统拦截。原因: %s", reason),
@@ -94,9 +118,19 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 		}
 	}
 
+	// 我们甚至可以只截取输出的前 100 字符放入 Trace，防止 Trace 文件过度膨胀
+	span.AddAttribute("output_preview", truncate(output, 100))
+
 	return schema.ToolResult{
 		ToolCallID: call.ID,
 		Output:     output,
 		IsError:    false,
 	}
+}
+
+func truncate(s string, max int) string {
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }
