@@ -17,6 +17,7 @@ var PricingModel = map[string]struct {
 	OutputPrice float64
 }{
 	"glm-4.7": {InputPrice: 0.15, OutputPrice: 0.15},
+	"glm-4.5-air": {InputPrice: 0.10, OutputPrice: 0.10},
 }
 
 // CostTracker 是一个包装了真实 LLMProvider的装饰器中间件
